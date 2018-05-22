@@ -132,11 +132,12 @@ void readline(char *buf, int *buf_length) {
     char c;
 
     while ((c = getchar()) != EOF) {
-        if (c == '\n') break;
-        if (i < *buf_length - 1) {
-            buf[i] = c;
-            i++;
+        if (*buf_length - 2 < i) {
+            *buf_length *= 2;
         }
+        if (c == '\n') break;
+        buf[i] = c;
+        i++;
     }
 
     buf[i] = '\0';
