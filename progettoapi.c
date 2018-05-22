@@ -124,23 +124,28 @@ void inputstr_append(inputstr_list *instrlist, char *item) {
 }
 
 
-void readline(char *buf, int *buf_length) {
+char* readline(int buf_size) {
     // Funzione che legge una linea di testo e la salva in una stringa.
     // Se necessario, rialloca la lunghezza della stringa.
 
     int i = 0;
     char c;
+    char *line;
+
+    line = malloc(buf_size * sizeof(char));
 
     while ((c = getchar()) != EOF) {
-        if (*buf_length - 2 < i) {
-            *buf_length *= 2;
+        if (buf_size - 2 < i) {
+            buf_size *= 2;
+            line = realloc(line, buf_size * sizeof(char));
         }
         if (c == '\n') break;
-        buf[i] = c;
+        line[i] = c;
         i++;
     }
 
-    buf[i] = '\0';
+    line[i] = '\0';
+    return line;
 }
 
 
@@ -148,56 +153,56 @@ void parse_input(trans_list *transitions, accept_list *accepts, inputstr_list *i
     int cmp_ok;
     int str2int;
     char *line;
-    char *string;
-
-    int line_len = BASE_IN_BUF_SIZE;
-    int string_len = BASE_STR_LEN;
-
-    line = malloc(line_len * sizeof(char));
-    string = malloc(string_len * sizeof(char));
 
     // Leggo il file fino a raggiungere l'inizio "tr"
     do {
-        readline(line, &line_len);
-    } while (strcmp(line, "tr"));
+        line = readline(BASE_IN_BUF_SIZE);
+        cmp_ok = strcmp(line, "tr");
+        free(line);
+    } while (cmp_ok);
 
     // Leggo l'elenco degli stati
     do {
-        readline(line, &line_len);
+        line = readline(BASE_IN_BUF_SIZE);
         cmp_ok = strcmp(line, "acc");
         if (cmp_ok) {
             trans_append(transitions, str2trans(line));
         }
+        free(line);
     } while (cmp_ok);
 
     // Leggo l'elenco degli stati di accettazione
     do {
-        readline(line, &line_len);
+        line = readline(BASE_IN_BUF_SIZE);
         cmp_ok = strcmp(line, "max");
         if (cmp_ok) {
             sscanf(line, "%d", &str2int);
             accept_append(accepts, str2int);
         }
+        free(line);
     } while (cmp_ok);
 
     // Leggo il massimo numero di mosse
-    readline(line, &line_len);
+    line = readline(BASE_IN_BUF_SIZE);
     sscanf(line, "%d", max_moves);
+    free(line);
 
-    // Leggo il file fino a raggiungere l'inizio di "run"
+    // Leggo il file fino a raggiungere "run"
     do {
-        readline(line, &line_len);
-    } while (strcmp(line, "run") != 0);
+        line = readline(BASE_IN_BUF_SIZE);
+        cmp_ok = strcmp(line, "run");
+        free(line);
+    } while (cmp_ok);
 
     // Leggo le stringhe di input per la MT
     do {
-        readline(string, &string_len);
-        cmp_ok = strcmp(string, "");
+        line = readline(BASE_STR_LEN);
+        cmp_ok = strcmp(line, "");
         if (cmp_ok) {
-            inputstr_append(input_strings, string);
+            inputstr_append(input_strings, line);
         }
+        free(line);
     } while (cmp_ok);
-
 }
 
 
