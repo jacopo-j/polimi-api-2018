@@ -50,6 +50,7 @@ typedef tape_cell *cell_ptr;  // puntatore a una cella del nastro
 
 typedef struct CF {
     int state;
+    int mv_count;
     cell_ptr tape;
     struct CF *next;
 } config;  // oggetto "configurazione della macchina"
@@ -94,6 +95,16 @@ typedef queue *queue_ptr;
         }
         printf("]\n");
     }
+
+
+    void _print_queue(queue_ptr q) {
+        conf_ptr cursor = q->head;
+        printf("== CONTENUTO CODA ==\n");
+        while (cursor != NULL) {
+            printf("  %d %c\n", cursor->state, cursor->tape->content);
+            cursor = cursor->next;
+        }
+    }
 #endif
 
 
@@ -108,11 +119,12 @@ cell_ptr create_cell() {
 }
 
 
-conf_ptr new_config(int state, cell_ptr tape) {
+conf_ptr new_config(int state, int mv_count, cell_ptr tape) {
     // Funzione che genera una nuova configurazione
 
     conf_ptr new_conf = malloc(sizeof(config));
     new_conf->state = state;
+    new_conf->mv_count = mv_count;
     new_conf->tape = tape;
     new_conf->next = NULL;
     return new_conf;
@@ -144,8 +156,7 @@ void grow_tape_rgt(cell_ptr cur_cell) {
 }
 
 
-void enqueue_config(queue_ptr q, int state, cell_ptr tape) {
-    conf_ptr new_conf = new_config(state, tape);
+void enqueue_config(queue_ptr q, conf_ptr new_conf) {
     if (q->tail == NULL) {
         q->tail = q->head = new_conf;
         return;
@@ -225,27 +236,40 @@ void obliterate(cell_ptr tape_head) {
 cell_ptr duplicate(cell_ptr source) {
     // Duplica un nastro
 
-    cell_ptr prev_cell = NULL;
-    cell_ptr cursor = source;
     cell_ptr new_cell;
+    cell_ptr prev_new_cell = NULL;
+    cell_ptr old_cursor;
+    cell_ptr new_head = NULL;
     int moves = 0;
-    rewind_(&cursor);
-    while (cursor != NULL) {
-        new_cell = create_cell();
-        if (prev_cell != NULL) {
-            new_cell->left = prev_cell;
-            prev_cell->right = new_cell;
-        }
-        new_cell->content = cursor->content;
-        prev_cell = new_cell;
-        cursor = cursor->right;
+    old_cursor = source;
+
+    // Riavvolgo il nastro tenendo conto di quanto
+    while (old_cursor->left != NULL) {
+        old_cursor = old_cursor->left;
         moves++;
     }
-    while ((moves > 0) && (new_cell->left != NULL)) {
-        new_cell = new_cell->left;
+
+    // Duplico il nastro
+    while (old_cursor != NULL) {
+        new_cell = create_cell();
+        new_cell->content = old_cursor->content;
+        if (new_head != NULL) {
+            new_cell->left = prev_new_cell;
+            prev_new_cell->right = new_cell;
+        } else {
+            new_head = new_cell;
+        }
+        prev_new_cell = new_cell;
+        old_cursor = old_cursor->right;
+    }
+
+    // Mando avanti il nuovo nastro fino alla posizione corretta
+    while (moves > 0) {
+        new_head = new_head->right;
         moves--;
     }
-    return new_cell;
+
+    return new_head;
 }
 
 
@@ -400,63 +424,37 @@ void parse_input(trans_list *transitions, accept_list *accepts, int *max_moves) 
 }
 
 
-char run_mt(cell_ptr tape, int cur_state, int max_moves, trans_list transitions, accept_list accepts) {
+char run_mt(cell_ptr tape, int max_moves, trans_list transitions, accept_list accepts) {
     queue_ptr queue = new_queue();
-    // queue_ptr seen = new_queue();
-    enqueue_config(queue, 0, tape);
-    // enqueue_config(seen, 0, tape);
-    int mv_count = 0;
+    conf_ptr init_conf = new_config(0, 0, tape);
+    enqueue_config(queue, init_conf);
+    int mv_count;
     conf_ptr cur_conf, next_conf;
     cell_ptr tape_cpy;
     int stuck;
     char result;
 
     while (queue->head != NULL) {
-        if (mv_count > max_moves) return UNDEFINED;
         cur_conf = dequeue_config(queue);
-        printf("\nMi trovo nello stato %d e sul nastro leggo '%c'\n", cur_conf->state, cur_conf->tape->content);
-        mv_count++;
-        stuck = 1;
+        if (is_accepting(cur_conf->state, accepts)) return ACCEPTED;
+        if (cur_conf->mv_count >= max_moves) return UNDEFINED;
+        // printf("\nMi trovo nello stato %d e sul nastro leggo '%c'\n", cur_conf->state, cur_conf->tape->content);
+        mv_count = cur_conf->mv_count + 1;
         for (int i = 0; i < transitions.items; i++) {
             if ((cur_conf->state == transitions.data[i].cur_state) && (cur_conf->tape->content == transitions.data[i].read)) {
                 tape_cpy = duplicate(cur_conf->tape);
                 tape_cpy->content = transitions.data[i].write;
+                // printf("Mossa del nastro: %c\n", transitions.data[i].move);
+                // _print_tape(cur_conf->tape);
                 move_head(transitions.data[i].move, &tape_cpy);
-                // next_conf = new_config(transitions.data[i].next_state, tape_cpy);
-                // if (not_seen(seen, next_conf)) {
-                    printf("  Aggiungo alla coda lo stato %d\n", transitions.data[i].next_state);
-                    enqueue_config(queue, transitions.data[i].next_state, tape_cpy);
-                    // enqueue_config(seen, transitions.data[i].next_state, tape_cpy);
-                    stuck = 0;
-                // }
+                // printf("  Aggiungo alla coda lo stato %d\n", transitions.data[i].next_state);
+                next_conf = new_config(transitions.data[i].next_state, mv_count, tape_cpy);
+                enqueue_config(queue, next_conf);
             }
         }
-        if ((stuck) && (is_accepting(cur_conf->state, accepts))) {
-            return ACCEPTED;
-        }
+        // _print_queue(queue);
     }
     return REJECTED;
-
-
-    // if (mv_count > max_moves) return UNDEFINED;
-    // if (is_stuck(cur_state, tape->content, transitions)) {
-    //     if (is_accepting(cur_state, accepts)) return ACCEPTED;
-    //     return REJECTED;
-    // }
-
-    // char result;
-    // for (int i = 0; i < transitions.items; i++) {
-    //     if ((cur_state == transitions.data[i].cur_state) && (tape->content == transitions.data[i].read)) {
-    //         cur_state = transitions.data[i].next_state;
-    //         tape->content = transitions.data[i].write;
-    //         move_head(transitions.data[i].move, &tape);
-    //         mv_count++;
-    //         result = run_mt(tape, cur_state, mv_count, max_moves, transitions, accepts);
-    //         if (result == ACCEPTED) {
-    //             return ACCEPTED;
-    //         }
-    //     }
-    // }
 }
 
 
@@ -515,8 +513,7 @@ int main() {
         }
 
         // Esecuzione della macchina di Turing
-        printf("%c\n", run_mt(tape, 0, max_moves, transitions, accepts));
-        break;
+        printf("%c\n", run_mt(tape, max_moves, transitions, accepts));
     }
 
     return 0;
