@@ -5,7 +5,6 @@
 #define BASE_IN_BUF_SIZE 20  // Massima lunghezza (iniziale) di ogni linea del file di input
 #define BASE_TRANS_NO 50  // Numero iniziale di transizioni
 #define BASE_ACCEPT_NO 5 // Numero iniziale di stati di accettazione
-#define BASE_STR_LEN 100 // Massima lunghezza di ogni stringa di input per la MT
 #define LEFT 'L'
 #define RIGHT 'R'
 #define STOP 'S'
@@ -179,19 +178,6 @@ conf_ptr dequeue_config(queue_ptr q) {
 }
 
 
-int not_seen(queue_ptr q, conf_ptr config) {
-    queue_ptr cursor;
-    cursor = q;
-    while (cursor->head != NULL) {
-        if ((cursor->head->state == config->state) && (cursor->head->tape->content == config->tape->content)) {
-            return 0;
-        }
-        cursor->head = cursor->head->next;
-    }
-    return 1;
-}
-
-
 void move_head(char move, cell_ptr *cur_cell) {
     // Funzione che sposta la testina sul nastro
 
@@ -228,6 +214,17 @@ void obliterate(cell_ptr tape_head) {
     while (tape_head != NULL) {
         tmp = tape_head;
         tape_head = tape_head->right;
+        free(tmp);
+    }
+}
+
+
+void cleanup(queue_ptr q) {
+    conf_ptr tmp;
+    while (q->head != NULL) {
+        tmp = dequeue_config(q);
+        rewind_(&(tmp->tape));
+        obliterate(tmp->tape);
         free(tmp);
     }
 }
@@ -325,18 +322,6 @@ int is_accepting(int status, accept_list acclist) {
  }
 
 
-int is_stuck(int status, char read, trans_list trlist) {
-    // Determina se uno stato è senza uscita
-
-    for (int i = 0; i < trlist.items; i++) {
-        if ((trlist.data[i].cur_state == status) && (trlist.data[i].read == read)) {
-            return 0;
-        }
-    }
-    return 1;
-}
-
-
 cell_ptr write_inputstr(char *string) {
     // Scrive la stringa di input sul nastro, lo riavvolge e lo restituisce
 
@@ -431,30 +416,46 @@ char run_mt(cell_ptr tape, int max_moves, trans_list transitions, accept_list ac
     int mv_count;
     conf_ptr cur_conf, next_conf;
     cell_ptr tape_cpy;
-    int stuck;
-    char result;
+    char result = REJECTED;
 
     while (queue->head != NULL) {
+        // Estraggo la prima configurazione dalla coda
         cur_conf = dequeue_config(queue);
-        if (is_accepting(cur_conf->state, accepts)) return ACCEPTED;
-        if (cur_conf->mv_count >= max_moves) return UNDEFINED;
-        // printf("\nMi trovo nello stato %d e sul nastro leggo '%c'\n", cur_conf->state, cur_conf->tape->content);
+        if (is_accepting(cur_conf->state, accepts)) {
+            result = ACCEPTED;
+            rewind_(&(cur_conf->tape));
+            obliterate(cur_conf->tape);
+            free(cur_conf);
+            cleanup(queue);
+            break;
+        }
+        if (cur_conf->mv_count >= max_moves) {
+            result = UNDEFINED;
+            rewind_(&(cur_conf->tape));
+            obliterate(cur_conf->tape);
+            free(cur_conf);
+            cleanup(queue);
+            break;
+        }
         mv_count = cur_conf->mv_count + 1;
         for (int i = 0; i < transitions.items; i++) {
             if ((cur_conf->state == transitions.data[i].cur_state) && (cur_conf->tape->content == transitions.data[i].read)) {
+                // Per ogni transizione che posso effettuare da qui,
+                // duplico il nastro e aggiungo la nuova configurazione
+                // alla coda.
                 tape_cpy = duplicate(cur_conf->tape);
                 tape_cpy->content = transitions.data[i].write;
-                // printf("Mossa del nastro: %c\n", transitions.data[i].move);
-                // _print_tape(cur_conf->tape);
                 move_head(transitions.data[i].move, &tape_cpy);
-                // printf("  Aggiungo alla coda lo stato %d\n", transitions.data[i].next_state);
                 next_conf = new_config(transitions.data[i].next_state, mv_count, tape_cpy);
                 enqueue_config(queue, next_conf);
             }
         }
-        // _print_queue(queue);
+        rewind_(&(cur_conf->tape));
+        obliterate(cur_conf->tape);
+        free(cur_conf);
     }
-    return REJECTED;
+    free(queue);
+    return result;
 }
 
 
@@ -488,12 +489,6 @@ int main() {
     while (keep_reading) {
 
         // Preparo un nastro contenente la stringa
-        if (tape != NULL) {
-            // Se non è la prima volta che creo un nastro,
-            // prima elimino quello creato precedentemente.
-            rewind_(&tape);
-            obliterate(tape);
-        }
         tape = create_cell();
         while ((read_char = getchar())) {
             if (read_char == '\n') break;
@@ -515,6 +510,9 @@ int main() {
         // Esecuzione della macchina di Turing
         printf("%c\n", run_mt(tape, max_moves, transitions, accepts));
     }
+
+    free(transitions.data);
+    free(accepts.data);
 
     return 0;
 }
