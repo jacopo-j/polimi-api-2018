@@ -1,6 +1,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#ifdef DEBUG
+    #include <time.h>
+#endif
 
 #define BASE_IN_BUF_SIZE 20  // Massima lunghezza (iniziale) di ogni linea del file di input
 #define BASE_TRANS_NO 50  // Numero iniziale di transizioni
@@ -409,7 +412,7 @@ void parse_input(trans_list *transitions, accept_list *accepts, int *max_moves) 
 }
 
 
-char run_mt(cell_ptr tape, int max_moves, trans_list transitions, accept_list accepts) {
+char run_tm(cell_ptr tape, int max_moves, trans_list transitions, accept_list accepts) {
     queue_ptr queue = new_queue();
     conf_ptr init_conf = new_config(0, 0, tape);
     enqueue_config(queue, init_conf);
@@ -430,12 +433,13 @@ char run_mt(cell_ptr tape, int max_moves, trans_list transitions, accept_list ac
             break;
         }
         if (cur_conf->mv_count >= max_moves) {
-            result = UNDEFINED;
+            if (result != UNDEFINED) {
+                result = UNDEFINED;
+            }
             rewind_(&(cur_conf->tape));
             obliterate(cur_conf->tape);
             free(cur_conf);
-            cleanup(queue);
-            break;
+            continue;
         }
         mv_count = cur_conf->mv_count + 1;
         for (int i = 0; i < transitions.items; i++) {
@@ -463,6 +467,10 @@ int main() {
 
     // Inizializzo le variabili e le liste
 
+    #ifdef DEBUG
+        clock_t begin = clock();
+    #endif
+
     trans_list transitions;
     transitions.items = 0;
     transitions.length = BASE_TRANS_NO;
@@ -482,6 +490,7 @@ int main() {
 
     char read_char; // Buffer per la lettura di un carattere dallo stdin
     int keep_reading = 1;
+    int did_read_smth;
     cell_ptr tape = NULL;
 
 
@@ -490,29 +499,37 @@ int main() {
 
         // Preparo un nastro contenente la stringa
         tape = create_cell();
+        did_read_smth = 0;
         while ((read_char = getchar())) {
             if (read_char == '\n') break;
             if (read_char == EOF) {
                 keep_reading = 0;
                 break;
             }
+            did_read_smth = 1;
             tape->content = read_char;
             move_head(RIGHT, &tape);
         }
         rewind_(&tape);
-        if (! keep_reading) {
-            // Se non dovevo continuare a leggere altre stringhe,
+
+        if (! did_read_smth) {
+            // Se non ho letto nulla,
             // cancello il nastro che ho inutilmente creato.
             obliterate(tape);
             break;
         }
 
         // Esecuzione della macchina di Turing
-        printf("%c\n", run_mt(tape, max_moves, transitions, accepts));
+        printf("%c\n", run_tm(tape, max_moves, transitions, accepts));
     }
 
     free(transitions.data);
     free(accepts.data);
+
+    #ifdef DEBUG
+        clock_t end = clock();
+        printf("\nCicli di clock impiegati: %lu\n", (end - begin));
+    #endif
 
     return 0;
 }
