@@ -1,130 +1,217 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#ifdef DEBUG
-    #include <time.h>
-#endif
 
-#define BASE_IN_BUF_SIZE 20  // Massima lunghezza (iniziale) di ogni linea del file di input
-#define BASE_TRANS_NO 50  // Numero iniziale di transizioni
-#define BASE_ACCEPT_NO 5 // Numero iniziale di stati di accettazione
-#define LEFT 'L'
-#define RIGHT 'R'
-#define STOP 'S'
-#define BLANK '_' // Simboli del nastro
-#define UNDEFINED 'U'
-#define ACCEPTED '1'
-#define REJECTED '0'
+#define BASE_STATES_NO 512    // Numero iniziale degli stati nella tabella degli stati
+#define BASE_TRANS_NO  32     // Numero iniziale di transizioni allocate per ogni coppia (stato, carattere)
+#define BASE_TAPE_LEN  128    // Lunghezza base del nastro
+#define INPUT_BUF_SIZE 128
+#define MAX(x, y)      (((x) > (y)) ? (x) : (y))
 
 
-typedef struct transition {
-    int cur_state;
-    char read;
+typedef struct {
     char write;
-    char move;
+    signed char move;
     int next_state;
-} transition;  // oggetto "transizione"
+} transition;  // Oggetto "transizione"
 
-
-typedef struct trans_list {
-    transition *data;
-    int length;
+typedef struct {
+    transition *transitions;
     int items;
-} trans_list;  // oggetto "lista di transizioni"
+    int len;
+} tr_list;  // Oggetto "lista di transizioni"
 
+typedef struct {
+    tr_list *states;
+    int len;
+} states_list; // Oggetto "lista di stati"
 
-typedef struct accept_list {
-    int *data;
-    int length;
-    int items;
-} accept_list;  // oggetto "lista di stati di accettazione"
+typedef struct {
+    char *left_part;
+    char *right_part;
+    int left_len;
+    int right_len;
+    int left_max;
+    int right_max;
+    int pos;
+    int mov_buf;
+} tape_t;  // Il nastro
 
-
-typedef struct TC {
-    char content;
-    struct TC *right;
-    struct TC *left;
-} tape_cell;  // oggetto "cella del nastro di memoria"
-
-
-typedef tape_cell *cell_ptr;  // puntatore a una cella del nastro
-
-
-typedef struct CF {
+typedef struct cf {
     int state;
     int mv_count;
-    cell_ptr tape;
-    struct CF *next;
+    tape_t *tape;
+    struct cf *next;
 } config;  // oggetto "configurazione della macchina"
 
-
-typedef config *conf_ptr;
-
-
-typedef struct QU {
+typedef struct qu {
     config *head;
     config *tail;
-} queue;  // oggetto "coda"
-
-
-typedef queue *queue_ptr;
+} queue_t;  // oggetto "coda"
 
 
 #ifdef DEBUG
-    void _print_transitions(trans_list t) {
-        printf("== TRANSIZIONI ==\n");
-        for (int i = 0; i < t.items; i++) {
-            printf(" %d | %c | %c | %c | %d\n", t.data[i].cur_state, t.data[i].read, t.data[i].write, t.data[i].move, t.data[i].next_state);
+    void print(tape_t *tape) {
+        // Stampa un nastro
+        printf("❮ ");
+        int r_print_from = 0;
+        for (int i = 0; i < tape->left_len; i++) {
+            if (tape->left_part[i] == '\0') {
+                r_print_from = i;
+                break;
+            }
         }
-        printf("\n");
+        for (int i = tape->left_len - 1; i >= 0; i--) {
+            if (i > r_print_from) {
+                printf("□ ");
+            } else if (i == r_print_from) {
+                printf("■ ");
+            } else {
+                printf("%c ", tape->left_part[i]);
+            }
+        }
+        printf("| ");
+        char buf;
+        int actually_print = 1;
+        for (int i = 0; i < tape->right_len; i++) {
+            buf = tape->right_part[i];
+            if (actually_print && buf == '\0') {
+                printf("■ ");
+                actually_print = 0;
+            } else if (actually_print) {
+                printf("%c ", buf);
+            } else {
+                printf("□ ");
+            }
+        }
+        printf("❯\n     ");
+        if (tape->pos < 0) {
+            for (int i = 0; i < tape->left_len+tape->pos; i++) {
+                printf("  ");
+            }
+            printf("^\n");
+        } else {
+            for (int i = 0; i <= tape->pos + tape->left_len; i++) {
+                printf("  ");
+            }
+            printf("^\n");
+        }
     }
 
-    void _print_accepts(accept_list a) {
-        printf("== STATI DI ACCETTAZIONE ==\n");
-        for (int i = 0; i < a.items; i++) {
-            printf(" %d\n", a.data[i]);
-        }
-        printf("\n");
+
+    void print_tape_data(tape_t *tape) {
+        printf("  left_len:    %d\n", tape->left_len);
+        printf("  right_len:   %d\n", tape->right_len);
+        printf("  pos:         %d\n", tape->pos);
+        printf("  left_max:    %d\n", tape->left_max);
+        printf("  right_max:   %d\n", tape->right_max);
+        printf("  mov_buf:     %d\n", tape->mov_buf);
     }
 
 
-    void _print_tape(cell_ptr tape_head) {
-        cell_ptr cursor = tape_head;
-        printf("== CONTENUTO NASTRO ==\n [");
-        while (cursor != NULL) {
-            printf("%c, ", cursor->content);
-            cursor = cursor->right;
-        }
-        printf("]\n");
-    }
-
-
-    void _print_queue(queue_ptr q) {
-        conf_ptr cursor = q->head;
+    void print_queue(queue_t *q) {
+        config *cursor = q->head;
         printf("== CONTENUTO CODA ==\n");
         while (cursor != NULL) {
-            printf("  %d %c\n", cursor->state, cursor->tape->content);
+            printf("%d  ", cursor->state);
+            print(cursor->tape);
             cursor = cursor->next;
         }
     }
 #endif
 
 
-cell_ptr create_cell() {
-    // Funzione che genera una nuova cella
-
-    cell_ptr new_cell = malloc(sizeof(tape_cell));
-    new_cell->content = BLANK;
-    new_cell->left = NULL;
-    new_cell->right = NULL;
-    return new_cell;
+void move_tape(int mov, tape_t *tape) {
+    /*
+    Sposta la testina. Se la testina va spostata oltre l'ultimo
+    carattere su ogni lato del nastro, rialloca la dimensione.
+    */
+    tape->pos += mov;
+    if (tape->pos >= tape->right_len - 1) {
+        tape->right_len *= 2;
+        tape->right_part = realloc(tape->right_part, tape->right_len * sizeof(char));
+    } else if (tape->pos <= -tape->left_len) {
+        tape->left_len *= 2;
+        tape->left_part = realloc(tape->left_part, tape->left_len * sizeof(char));
+    }
 }
 
 
-conf_ptr new_config(int state, int mv_count, cell_ptr tape) {
-    // Funzione che genera una nuova configurazione
+char read(tape_t *tape) {
+    /*
+    Legge il contenuto del nastro. Se la testina si trova oltre
+    l'ultimo carattere su ogni lato del nastro, ritorna '_' a
+    prescindere.
+    */
+    if (tape->pos > tape->right_max || tape->pos < tape->left_max) {
+        return '_';
+    }
+    if (tape->pos >= 0) {
+        return tape->right_part[tape->pos];
+    } else {
+        return tape->left_part[-tape->pos-1];
+    }
+}
 
-    conf_ptr new_conf = malloc(sizeof(config));
+
+void write(char wc, tape_t *tape) {
+    /*
+    Scrive un carattere sul nastro.
+    */
+    if (tape->pos >= 0) {
+        tape->right_part[tape->pos] = wc;
+        if (tape->pos > tape->right_max) {
+            tape->right_max = tape->pos;
+            tape->right_part[tape->pos+1] = '\0';
+        }
+    } else {
+        tape->left_part[-tape->pos-1] = wc;
+        if (tape->pos < tape->left_max) {
+            tape->left_max = tape->pos;
+            tape->left_part[-tape->pos] = '\0';
+        }
+    }
+}
+
+
+void duplicate(tape_t *newtape, tape_t *tape) {
+    /*
+    Crea una copia esatta di un nastro.
+    */
+    newtape->left_len = tape->left_len;
+    newtape->right_len = tape->right_len;
+    newtape->left_part = malloc(newtape->left_len * sizeof(char));
+    newtape->right_part = malloc(newtape->right_len * sizeof(char));
+    newtape->pos = tape->pos;
+    newtape->right_max = tape->right_max;
+    newtape->left_max = tape->left_max;
+    newtape->mov_buf = tape->mov_buf;
+    strcpy(newtape->left_part, tape->left_part);
+    strcpy(newtape->right_part, tape->right_part);
+}
+
+
+void readline(char *buffer) {
+    /*
+    Legge una linea del file di input.
+    */
+    int i = 0;
+    char c;
+    while ((c = getchar()) != EOF) {
+        if (c == '\r') continue;
+        if (c == '\n') break;
+        buffer[i] = c;
+        i++;
+    }
+    buffer[i] = '\0';
+}
+
+
+config *new_config(int state, int mv_count, tape_t *tape) {
+    /*
+    Funzione che genera una nuova configurazione
+    */
+    config *new_conf = malloc(sizeof(config));
     new_conf->state = state;
     new_conf->mv_count = mv_count;
     new_conf->tape = tape;
@@ -133,32 +220,10 @@ conf_ptr new_config(int state, int mv_count, cell_ptr tape) {
 }
 
 
-queue_ptr new_queue() {
-    queue_ptr q = malloc(sizeof(queue));
-    q->head = q->tail = NULL;
-    return q;
-}
-
-
-void grow_tape_lft(cell_ptr cur_cell) {
-    // Funzione che inserisce una nuova cella a sinistra del nastro
-
-    cell_ptr new_cell = create_cell();
-    new_cell->right = cur_cell;
-    cur_cell->left = new_cell;
-}
-
-
-void grow_tape_rgt(cell_ptr cur_cell) {
-    // Funzione che inserisce una nuova cella a destra del nastro
-
-    cell_ptr new_cell = create_cell();
-    new_cell->left = cur_cell;
-    cur_cell->right = new_cell;
-}
-
-
-void enqueue_config(queue_ptr q, conf_ptr new_conf) {
+void enqueue_config(queue_t *q, config *new_conf) {
+    /*
+    Funzione che aggiunge una configurazione in fondo alla coda
+    */
     if (q->tail == NULL) {
         q->tail = q->head = new_conf;
         return;
@@ -168,11 +233,15 @@ void enqueue_config(queue_ptr q, conf_ptr new_conf) {
 }
 
 
-conf_ptr dequeue_config(queue_ptr q) {
+config *dequeue_config(queue_t *q) {
+    /*
+    Funzione che rimuove la configurazione in cima alla coda
+    e la ritorna
+    */
     if (q->head == NULL) {
         return NULL;
     }
-    conf_ptr temp = q->head;
+    config *temp = q->head;
     q->head = q->head->next;
     if (q->head == NULL) {
         q->tail = NULL;
@@ -181,355 +250,252 @@ conf_ptr dequeue_config(queue_ptr q) {
 }
 
 
-void move_head(char move, cell_ptr *cur_cell) {
-    // Funzione che sposta la testina sul nastro
-
-    if (move == STOP) return;
-    if (move == LEFT) {
-        if ((*cur_cell)->left == NULL) {
-            grow_tape_lft(*cur_cell);
-        }
-        *cur_cell = (*cur_cell)->left;
-    } else if (move == RIGHT) {
-        if ((*cur_cell)->right == NULL) {
-            grow_tape_rgt(*cur_cell);
-        }
-        *cur_cell = (*cur_cell)->right;
-
-    }
-}
-
-
-void rewind_(cell_ptr *cur_cell) {
-    // Funzione che riavvolge il nastro spostando la testina nella
-    // cella più a sinistra.
-
-    while ((*cur_cell)->left != NULL) {
-        *cur_cell = (*cur_cell)->left;
-    }
-}
-
-
-void obliterate(cell_ptr tape_head) {
-    // Distrugge un natro
-
-    cell_ptr tmp;
-    while (tape_head != NULL) {
-        tmp = tape_head;
-        tape_head = tape_head->right;
-        free(tmp);
-    }
-}
-
-
-void cleanup(queue_ptr q) {
-    conf_ptr tmp;
+void cleanup(queue_t *q) {
+    // Svuota la coda
+    config *tmp;
     while (q->head != NULL) {
         tmp = dequeue_config(q);
-        rewind_(&(tmp->tape));
-        obliterate(tmp->tape);
+        free(tmp->tape->left_part);
+        free(tmp->tape->right_part);
+        free(tmp->tape);
         free(tmp);
     }
-}
-
-
-cell_ptr duplicate(cell_ptr source) {
-    // Duplica un nastro
-
-    cell_ptr new_cell;
-    cell_ptr prev_new_cell = NULL;
-    cell_ptr old_cursor;
-    cell_ptr new_head = NULL;
-    int moves = 0;
-    old_cursor = source;
-
-    // Riavvolgo il nastro tenendo conto di quanto
-    while (old_cursor->left != NULL) {
-        old_cursor = old_cursor->left;
-        moves++;
-    }
-
-    // Duplico il nastro
-    while (old_cursor != NULL) {
-        new_cell = create_cell();
-        new_cell->content = old_cursor->content;
-        if (new_head != NULL) {
-            new_cell->left = prev_new_cell;
-            prev_new_cell->right = new_cell;
-        } else {
-            new_head = new_cell;
-        }
-        prev_new_cell = new_cell;
-        old_cursor = old_cursor->right;
-    }
-
-    // Mando avanti il nuovo nastro fino alla posizione corretta
-    while (moves > 0) {
-        new_head = new_head->right;
-        moves--;
-    }
-
-    return new_head;
-}
-
-
-transition str2trans(char *input) {
-    // Funzione che converte una stringa in un oggetto "transizione".
-
-    transition t;
-    sscanf(input, "%d %c %c %c %d",
-           &(t.cur_state),
-           &(t.read),
-           &(t.write),
-           &(t.move),
-           &(t.next_state));
-    return t;
-}
-
-
-void trans_append(trans_list *trlist, transition item) {
-    // Aggiungi una transizione a una lista di transizioni
-
-    trlist->items++;
-    if (trlist->items > trlist->length) {
-        // Se non c'è più spazio nella lista, raddoppio la sua dimensione
-        trlist->length *= 2;
-        trlist->data = realloc(trlist->data, (trlist->length) * sizeof(transition));
-    }
-    trlist->data[trlist->items - 1] = item;
-}
-
-
-void accept_append(accept_list *acclist, int item) {
-    // Aggiungi uno stato di accettazione a una lista di stati di accettazione
-
-    acclist->items++;
-    if (acclist->items > acclist->length) {
-        acclist->length *= 2;
-        // Se non c'è più spazio nella lista, raddoppio la sua dimensione
-        acclist->data = realloc(acclist->data, (acclist->length) * sizeof(int));
-    }
-    acclist->data[acclist->items - 1] = item;
-}
-
-
-int is_accepting(int status, accept_list acclist) {
-    // Determina se uno stato è di accettazione
-
-    for (int i = 0; i < acclist.items; i++) {
-        if (acclist.data[i] == status) {
-            return 1;
-        }
-    }
-    return 0;
- }
-
-
-cell_ptr write_inputstr(char *string) {
-    // Scrive la stringa di input sul nastro, lo riavvolge e lo restituisce
-
-    cell_ptr cell = create_cell();
-    unsigned long i;
-    for (i = 0; i < strlen(string) - 1; i++) {
-        cell->content = string[i];
-        move_head(RIGHT, &cell);
-    }
-    cell->content = string[i];
-    rewind_(&cell);
-    return cell;
-}
-
-
-char* readline(int buf_size) {
-    // Funzione che legge una linea di testo e la salva in una stringa.
-    // Se necessario, rialloca la lunghezza della stringa.
-
-    int i = 0;
-    char c;
-    char *line;
-
-    line = malloc(buf_size * sizeof(char));
-
-    while ((c = getchar()) != EOF) {
-        if (buf_size - 2 < i) {
-            buf_size *= 2;
-            line = realloc(line, buf_size * sizeof(char));
-        }
-        if (c == '\n') break;
-        line[i] = c;
-        i++;
-    }
-
-    line[i] = '\0';
-    return line;
-}
-
-
-void parse_input(trans_list *transitions, accept_list *accepts, int *max_moves) {
-    int cmp_ok;
-    int str2int;
-    char *line;
-
-    // Leggo il file fino a raggiungere l'inizio "tr"
-    do {
-        line = readline(BASE_IN_BUF_SIZE);
-        cmp_ok = strcmp(line, "tr");
-        free(line);
-    } while (cmp_ok);
-
-    // Leggo l'elenco degli stati
-    do {
-        line = readline(BASE_IN_BUF_SIZE);
-        cmp_ok = strcmp(line, "acc");
-        if (cmp_ok) {
-            trans_append(transitions, str2trans(line));
-        }
-        free(line);
-    } while (cmp_ok);
-
-    // Leggo l'elenco degli stati di accettazione
-    do {
-        line = readline(BASE_IN_BUF_SIZE);
-        cmp_ok = strcmp(line, "max");
-        if (cmp_ok) {
-            sscanf(line, "%d", &str2int);
-            accept_append(accepts, str2int);
-        }
-        free(line);
-    } while (cmp_ok);
-
-    // Leggo il massimo numero di mosse
-    line = readline(BASE_IN_BUF_SIZE);
-    sscanf(line, "%d", max_moves);
-    free(line);
-
-    // Leggo il file fino a raggiungere "run"
-    do {
-        line = readline(BASE_IN_BUF_SIZE);
-        cmp_ok = strcmp(line, "run");
-        free(line);
-    } while (cmp_ok);
-}
-
-
-char run_tm(cell_ptr tape, int max_moves, trans_list transitions, accept_list accepts) {
-    queue_ptr queue = new_queue();
-    conf_ptr init_conf = new_config(0, 0, tape);
-    enqueue_config(queue, init_conf);
-    int mv_count;
-    conf_ptr cur_conf, next_conf;
-    cell_ptr tape_cpy;
-    char result = REJECTED;
-
-    while (queue->head != NULL) {
-        // Estraggo la prima configurazione dalla coda
-        cur_conf = dequeue_config(queue);
-        if (is_accepting(cur_conf->state, accepts)) {
-            result = ACCEPTED;
-            rewind_(&(cur_conf->tape));
-            obliterate(cur_conf->tape);
-            free(cur_conf);
-            cleanup(queue);
-            break;
-        }
-        if (cur_conf->mv_count >= max_moves) {
-            if (result != UNDEFINED) {
-                result = UNDEFINED;
-            }
-            rewind_(&(cur_conf->tape));
-            obliterate(cur_conf->tape);
-            free(cur_conf);
-            continue;
-        }
-        mv_count = cur_conf->mv_count + 1;
-        for (int i = 0; i < transitions.items; i++) {
-            if ((cur_conf->state == transitions.data[i].cur_state) && (cur_conf->tape->content == transitions.data[i].read)) {
-                // Per ogni transizione che posso effettuare da qui,
-                // duplico il nastro e aggiungo la nuova configurazione
-                // alla coda.
-                tape_cpy = duplicate(cur_conf->tape);
-                tape_cpy->content = transitions.data[i].write;
-                move_head(transitions.data[i].move, &tape_cpy);
-                next_conf = new_config(transitions.data[i].next_state, mv_count, tape_cpy);
-                enqueue_config(queue, next_conf);
-            }
-        }
-        rewind_(&(cur_conf->tape));
-        obliterate(cur_conf->tape);
-        free(cur_conf);
-    }
-    free(queue);
-    return result;
 }
 
 
 int main() {
-
-    // Inizializzo le variabili e le liste
-
-    #ifdef DEBUG
-        clock_t begin = clock();
-    #endif
-
-    trans_list transitions;
-    transitions.items = 0;
-    transitions.length = BASE_TRANS_NO;
-    transitions.data = malloc(transitions.length * sizeof(transition));
-
-    accept_list accepts;
-    accepts.items = 0;
-    accepts.length = BASE_ACCEPT_NO;
-    accepts.data = malloc(accepts.length * sizeof(int));
-
-    int max_moves;
-
-
-    // Popolo tutto leggendo il file di input
-    parse_input(&transitions, &accepts, &max_moves);
-
-
-    char read_char; // Buffer per la lettura di un carattere dallo stdin
+    unsigned int fromstate;
+    char fromchar;
+    char tochar;
+    signed char move;
+    unsigned int tostate;
+    unsigned int newtmlen;
+    unsigned int max_states_no = 0;
+    unsigned int str2int;
+    char input_buf[INPUT_BUF_SIZE];
+    int cmp_ok;
+    unsigned int max_moves;
     int keep_reading = 1;
-    int did_read_smth;
-    cell_ptr tape = NULL;
+    int did_read_smth = 0;
+    int mv_count;
+    config *cur_conf;
+    char result = '0';
+    char c, d;
 
+    // Inizializzo la tabella di caratteri, ovvero l'array più esterno
+    // È un array di liste di stati
+    states_list trans_map[75];
+    for (int i = 0; i < 75; i++) {
+        trans_map[i].len = 0;
+    }
 
-    // Per ogni stringa di input
+    // Leggo il file fino a raggiungere l'inizio "tr"
+    do {
+        readline(input_buf);
+        cmp_ok = strcmp(input_buf, "tr");
+    } while (cmp_ok != 0);
+
+    // Leggo l'elenco degli stati
+    do {
+        readline(input_buf);
+        cmp_ok = strcmp(input_buf, "acc");
+        if (cmp_ok != 0) {
+            sscanf(input_buf, "%u %c %c %c %u", &fromstate, &fromchar, &tochar, &move, &tostate);
+
+            max_states_no = MAX(max_states_no, MAX(fromstate, tostate));
+
+            // Converto il carattere della mossa in qualcosa di più utile
+            if (move == 'S') {
+                move = 0;
+            } else if (move == 'R') {
+                move = 1;
+            } else if (move == 'L') {
+                move = -1;
+            }
+
+            fromchar -= 48;
+
+            // Se non ho ancora visto questo carattere, devo allocare
+            // per esso una lista di stati
+            if (trans_map[fromchar].len == 0) {
+                trans_map[fromchar].len = MAX(BASE_STATES_NO, fromstate + 1);
+                trans_map[fromchar].states = malloc(trans_map[fromchar].len * sizeof(tr_list));
+                for (int i = 0; i < trans_map[fromchar].len; i++) {
+                    trans_map[fromchar].states[i].len = 0;
+                    trans_map[fromchar].states[i].items = 0;
+                }
+            }
+
+            // Se per questo carattere ho già allocato la lista di
+            // stati ma non è sufficientemente lunga
+            else if (trans_map[fromchar].len <= fromstate) {
+                newtmlen = MAX(2 * trans_map[fromchar].len, fromstate + 1);
+                trans_map[fromchar].states = realloc(trans_map[fromchar].states, newtmlen * sizeof(tr_list));
+                for (int i = trans_map[fromchar].len; i < newtmlen; i++) {
+                    trans_map[fromchar].states[i].len = 0;
+                    trans_map[fromchar].states[i].items = 0;
+                }
+                trans_map[fromchar].len = newtmlen;
+            }
+
+            // Se non ho ancora visto questa combinazione stato-car,
+            // devo allocare per esso una lista di transizioni
+            if (trans_map[fromchar].states[fromstate].len == 0) {
+                trans_map[fromchar].states[fromstate].len = BASE_TRANS_NO;
+                trans_map[fromchar].states[fromstate].transitions = malloc(trans_map[fromchar].states[fromstate].len * sizeof(transition));
+            }
+
+            // Se per questa combinazione stato-carattere ho già
+            // allocato una lista di transizioni ma non è
+            // sufficientemente lunga
+            else if (trans_map[fromchar].states[fromstate].len == trans_map[fromchar].states[fromstate].items) {
+                trans_map[fromchar].states[fromstate].len = 2 * trans_map[fromchar].states[fromstate].len;
+                trans_map[fromchar].states[fromstate].transitions = realloc(trans_map[fromchar].states[fromstate].transitions, trans_map[fromchar].states[fromstate].len * sizeof(transition));
+            }
+
+            // Finalmente, salvo la transizione
+            trans_map[fromchar].states[fromstate].transitions[trans_map[fromchar].states[fromstate].items].write = tochar;
+            trans_map[fromchar].states[fromstate].transitions[trans_map[fromchar].states[fromstate].items].move = move;
+            trans_map[fromchar].states[fromstate].transitions[trans_map[fromchar].states[fromstate].items].next_state = tostate;
+            trans_map[fromchar].states[fromstate].items++;
+        }
+    } while (cmp_ok != 0);
+
+    // Inizializzo la lista di stati di accettazione e li salvo
+    char accepting_states[max_states_no + 1];
+    memset(accepting_states, 0, max_states_no + 1);
+    do {
+        readline(input_buf);
+        cmp_ok = strcmp(input_buf, "max");
+        if (cmp_ok != 0) {
+            sscanf(input_buf, "%u", &str2int);
+            accepting_states[str2int] = 1;
+        }
+    } while (cmp_ok != 0);
+
+    // Leggo il massimo numero di mosse
+    readline(input_buf);
+    sscanf(input_buf, "%u", &max_moves);
+
+    // Leggo il file fino a raggiungere "run"
+    do {
+        readline(input_buf);
+        cmp_ok = strcmp(input_buf, "run");
+    } while (cmp_ok != 0);
+
+    // Preparo una coda per il BFS
+    queue_t *queue;
+    queue = malloc(sizeof(queue_t));
+    queue->head = queue->tail = NULL;
+
     while (keep_reading) {
-
-        // Preparo un nastro contenente la stringa
-        tape = create_cell();
-        did_read_smth = 0;
-        while ((read_char = getchar())) {
-            if (read_char == '\n') break;
-            if (read_char == EOF) {
+        // Per ogni riga di input, fino alla fine del file:
+        // Creo e preparo il nastro
+        tape_t *tape = malloc(sizeof(tape_t));
+        tape->left_len = BASE_TAPE_LEN;
+        tape->right_len = BASE_TAPE_LEN;
+        tape->left_part = malloc(tape->left_len * sizeof(char));
+        tape->right_part = malloc(tape->right_len * sizeof(char));
+        strcpy(tape->left_part, "_");
+        strcpy(tape->right_part, "_");
+        tape->pos = 0;
+        tape->right_max = 0;
+        tape->left_max = -1;
+        tape->mov_buf = 0;
+        did_read_smth = 0; // Controllo di non considerare linee vuote
+        // Scrivo i caratteri sul nastro
+        while ((c = getchar())) {
+            if (c == '\r') continue;
+            if (c == '\n') break;
+            if (c == EOF) {
                 keep_reading = 0;
                 break;
             }
             did_read_smth = 1;
-            tape->content = read_char;
-            move_head(RIGHT, &tape);
+            write(c, tape);
+            move_tape(1, tape);
         }
-        rewind_(&tape);
-
+        tape->pos = 0; // Riavvolgo il nastro
         if (! did_read_smth) {
-            // Se non ho letto nulla,
-            // cancello il nastro che ho inutilmente creato.
-            obliterate(tape);
+            // Se ho letto una linea vuota, cancello il nastro che
+            // ho inutilmente allocato.
+            free(tape->left_part);
+            free(tape->right_part);
+            free(tape);
             break;
         }
 
-        // Esecuzione della macchina di Turing
-        printf("%c\n", run_tm(tape, max_moves, transitions, accepts));
+        // Aggiungo la configurazione iniziale della macchina alla coda
+        // del BFS
+        enqueue_config(queue, new_config(0, 0, tape));
+        result = '0';
+
+        // Qui incomincia il BFS
+        while (queue->head != NULL) {
+            // Prelevo il primo elemento della coda
+            cur_conf = dequeue_config(queue);
+            if (accepting_states[cur_conf->state]) {
+                // Se mi trovo in uno stato di accettazione ho finito
+                result = '1';
+                free(cur_conf->tape->left_part);
+                free(cur_conf->tape->right_part);
+                free(cur_conf->tape);
+                free(cur_conf);
+                break;
+            }
+            if (cur_conf->mv_count >= max_moves) {
+                // Se ho superato il numero massimo di mosse ho finito
+                // con questo ramo di esecuzione, ma continuo a
+                // esaminare gli altri elementi in coda
+                if (result != 'U') result = 'U';
+                free(cur_conf->tape->left_part);
+                free(cur_conf->tape->right_part);
+                free(cur_conf->tape);
+                free(cur_conf);
+                continue;
+            }
+            mv_count = cur_conf->mv_count + 1;
+            c = read(cur_conf->tape);
+            d = c - 48;
+            if (trans_map[d].len > cur_conf->state && trans_map[d].states[cur_conf->state].items > 0) {
+                for (int i = 0; i < trans_map[d].states[cur_conf->state].items - 1; i++) {
+                    // Per ogni transizione compatibile con la
+                    // configurazione attuale TRANNE L'ULTIMA procedo
+                    // duplicando il nastro e aggiungendo una nuova
+                    // configurazione alla coda
+                    tape_t *tape_copy = malloc(sizeof(tape_t));
+                    duplicate(tape_copy, cur_conf->tape);
+                    if (trans_map[d].states[cur_conf->state].transitions[i].write != c) {
+                        write(trans_map[d].states[cur_conf->state].transitions[i].write, tape_copy);
+                    }
+                    if (trans_map[d].states[cur_conf->state].transitions[i].move != 0) {
+                        move_tape(trans_map[d].states[cur_conf->state].transitions[i].move, tape_copy);
+                    }
+                    enqueue_config(queue, new_config(trans_map[d].states[cur_conf->state].transitions[i].next_state, mv_count, tape_copy));
+                }
+                // Ora mi occupo dell'ultima transizione, oppure
+                // dell'unica transizione che ho se mi trovo in un
+                // caso deterministico. Anzi che duplicare il nastro
+                // modifico direttamente quello corrente.
+                if (trans_map[d].states[cur_conf->state].transitions[trans_map[d].states[cur_conf->state].items-1].write != c) {
+                    write(trans_map[d].states[cur_conf->state].transitions[trans_map[d].states[cur_conf->state].items-1].write, cur_conf->tape);
+                }
+                if (trans_map[d].states[cur_conf->state].transitions[trans_map[d].states[cur_conf->state].items-1].move != 0) {
+                    move_tape(trans_map[d].states[cur_conf->state].transitions[trans_map[d].states[cur_conf->state].items-1].move, cur_conf->tape);
+                }
+                cur_conf->state = trans_map[d].states[cur_conf->state].transitions[trans_map[d].states[cur_conf->state].items-1].next_state;
+                cur_conf->mv_count = mv_count;
+                cur_conf->next = NULL;
+                enqueue_config(queue, cur_conf);
+            } else {
+                free(cur_conf->tape->left_part);
+                free(cur_conf->tape->right_part);
+                free(cur_conf->tape);
+                free(cur_conf);
+            }
+        }
+        printf("%c\n", result);
+        cleanup(queue);
     }
-
-    free(transitions.data);
-    free(accepts.data);
-
-    #ifdef DEBUG
-        clock_t end = clock();
-        printf("\nCicli di clock impiegati: %lu\n", (end - begin));
-    #endif
-
     return 0;
 }
